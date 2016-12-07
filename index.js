@@ -90,8 +90,15 @@ function loggingFunction(options, log, tries) {
         	var client = dgram.createSocket('udp4');
         	syslogConnectionSingleton.connection = {
         		write: function (msg) {
+                    console.log('###### In client.send(msg, 0, msg.length, options.port, options.host, function (err) #######');
+                    console.log('msg',msg);
+                    console.log('msg.length',msg.length);
+                    console.log('options.host',options.host);
+                    console.log('options.port',options.port);
         			client.send(msg, 0, msg.length, options.port, options.host, function (err) {
+                        console.log('In client.send callback, err:',err);
         				if (err && err !== 0) {
+                            console.log('######error##### ', err);
         					cleanupConnection(err, 'error');
         					retryLogic(loggingFunction.bind(this, options, log), tries);
         				}
@@ -102,6 +109,7 @@ function loggingFunction(options, log, tries) {
         		}
         	};
         	client.on('error', function(err) {
+                console.log('######error##### ', err);
         		cleanupConnection(err, 'error');
         		retryLogic(loggingFunction.bind(this, options, log), tries);
         	});
