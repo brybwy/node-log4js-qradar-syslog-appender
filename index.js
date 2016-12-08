@@ -16,7 +16,8 @@ var log4js = require('log4js'),
     fs = require('fs'),
     util = require('util'),
     os = require('os'),
-    dgram = require('dgram');
+    dgram = require('dgram'),
+    net = require('net');
 
 module.exports = {
     appender: appender,
@@ -31,7 +32,7 @@ function retryLogic(retryFunction, tries) {
         syslogConnectionSingleton.droppedMessages++;
         return;
     }
-    
+
     // initialize (or increment if already initialized) tries
     if (!tries) {
         tries = 1;
@@ -42,16 +43,16 @@ function retryLogic(retryFunction, tries) {
 
     if (tries > syslogConnectionSingleton.MAX_TRIES) {
         syslogConnectionSingleton.circuitBreak = true;
-        util.log('QRadar Syslog Appender: Tried sending a message ' + syslogConnectionSingleton.MAX_TRIES + 
-            ' times but the client was not connected. ' + 
-            'Initiating circuit breaker protocol. ' + 
-            'For the next ' + syslogConnectionSingleton.CIRCUIT_BREAK_MINS + 
+        util.log('QRadar Syslog Appender: Tried sending a message ' + syslogConnectionSingleton.MAX_TRIES +
+            ' times but the client was not connected. ' +
+            'Initiating circuit breaker protocol. ' +
+            'For the next ' + syslogConnectionSingleton.CIRCUIT_BREAK_MINS +
             ' mins, we will not attempt to send any messages to Logmet.');
         // circuit breaker logic - if detected bad connection, stop trying
         // to send log messages to qradar for syslogConnectionSingleton.CIRCUIT_BREAK_MINS.
 
         syslogConnectionSingleton.droppedMessages++;
-        setTimeout(connectCircuit.bind(this), 
+        setTimeout(connectCircuit.bind(this),
             syslogConnectionSingleton.CIRCUIT_BREAK_MINS * 60 * 1000);
         return;
     }
@@ -60,7 +61,7 @@ function retryLogic(retryFunction, tries) {
 };
 
 function connectCircuit() {
-    util.log('QRadar Syslog Appender: Re-connecting the circuit. So far we have dropped ' + 
+    util.log('QRadar Syslog Appender: Re-connecting the circuit. So far we have dropped ' +
         syslogConnectionSingleton.droppedMessages + ' messages.');
     syslogConnectionSingleton.circuitBreak = false;
 };
@@ -115,26 +116,49 @@ function loggingFunction(options, log, tries) {
         	});
         	syslogConnectionSingleton.connecting = false;
         	logMessage(log, options, tries);
+        } else if (options.useTcpSyslog) {
+            var tcpOptions = {
+                host: options.host,
+                port: options.port
+            };
+
+            console.log('connecting useTcpSyslog : ', tcpOptions)
+            syslogConnectionSingleton.connection = net.connect(tcpOptions, connected.bind(this, log, options, tries));
+
+            syslogConnectionSingleton.connection.setEncoding('utf8');
+            syslogConnectionSingleton.connection.on('error', function(err) {
+                cleanupConnection(err, 'error');
+                retryLogic(loggingFunction.bind(this, options, log), tries);
+            });
+            syslogConnectionSingleton.connection.on('close', function(err) {
+                cleanupConnection(err, 'closed');
+                retryLogic(loggingFunction.bind(this, options, log), tries);
+            });
+            syslogConnectionSingleton.connection.on('end', function(err) {
+                cleanupConnection(err, 'ended');
+                retryLogic(loggingFunction.bind(this, options, log), tries);
+            });
+
         } else {
 
-        // set up mutual auth.
-        readBase64StringOrFile(options.certificateBase64, options.certificatePath, function(err, certificate) {
-            if (err) {
-                console.error('Error while loading certificate from path: ' + options.certificatePath + ' Error: ' + JSON.stringify(err, null, 2));
-                return;
-            }
-
-            readBase64StringOrFile(options.privateKeyBase64, options.privateKeyPath, function(err, key) {
+            // set up mutual auth.
+            readBase64StringOrFile(options.certificateBase64, options.certificatePath, function(err, certificate) {
                 if (err) {
-                    console.error('Error while loading private key from path: ' + options.privateKeyPath + ' Error: ' + JSON.stringify(err, null, 2));
+                    console.error('Error while loading certificate from path: ' + options.certificatePath + ' Error: ' + JSON.stringify(err, null, 2));
                     return;
                 }
 
-                readBase64StringOrFile(options.caBase64, options.caPath, function(err, caCert) {
+                readBase64StringOrFile(options.privateKeyBase64, options.privateKeyPath, function(err, key) {
                     if (err) {
-                        console.error('Error while loading ca key from path: ' + options.caPath + ' Error: ' + JSON.stringify(err, null, 2));
+                        console.error('Error while loading private key from path: ' + options.privateKeyPath + ' Error: ' + JSON.stringify(err, null, 2));
                         return;
                     }
+
+                    readBase64StringOrFile(options.caBase64, options.caPath, function(err, caCert) {
+                        if (err) {
+                            console.error('Error while loading ca key from path: ' + options.caPath + ' Error: ' + JSON.stringify(err, null, 2));
+                            return;
+                        }
                         var tlsOptions = {
                             cert: certificate,
                             key: key,
@@ -168,9 +192,9 @@ function loggingFunction(options, log, tries) {
                         });
                     });
 
+                });
             });
-        });
-    	}
+        }
     } else {
         logMessage(log, options, tries);
     }
@@ -191,7 +215,7 @@ function appender(options) {
 
 function connected(message, options, tries) {
     syslogConnectionSingleton.connecting = false;
-    console.warn('QRadar Syslog appender: we have reconnected to QRadar. ' + 
+    console.warn('QRadar Syslog appender: we have reconnected to QRadar. ' +
         syslogConnectionSingleton.droppedMessages + ' messages have been dropped.');
     logMessage(message, options, tries);
 };
@@ -245,7 +269,7 @@ function formatMessage(message, levelStr, options) {
         options.url,
         options.product,
         process.pid,
-        '-', 
+        '-',
         '-',
         message || '{}'
     );
@@ -264,6 +288,7 @@ function configure(config) {
             host: process.env.log4js_syslog_appender_host || config.options && config.options.host,
             port: process.env.log4js_syslog_appender_port || config.options && config.options.port,
             useUdpSyslog: process.env.log4js_syslog_appender_useUdpSyslog || config.options && config.options.useUdpSyslog || false,
+            useTcpSyslog: process.env.log4js_syslog_appender_useTcpSyslog || config.options && config.options.useTcpSyslog || false,
             certificatePath: process.env.log4js_syslog_appender_certificatePath || config.options && config.options.certificatePath,
             privateKeyPath: process.env.log4js_syslog_appender_privateKeyPath || config.options && config.options.privateKeyPath,
             passphrase: process.env.log4js_syslog_appender_passphrase || config.options && config.options.passphrase || '',
@@ -287,7 +312,7 @@ function configure(config) {
                 options.url = options.url.slice(stripOut[i].length);
             }
         }
-        
+
         // This option is a boolean, but if a string is passed in, we need to
         // coerce ourselves.
         if (options.rejectUnauthorized === "false") {
@@ -319,35 +344,35 @@ function verifyOptions(options) {
         }
     });
 
-	
-    [ 
+
+    [
         'log4js_syslog_appender_certificate',
         'log4js_syslog_appender_privateKey',
         'log4js_syslog_appender_ca',
     ].forEach(function (option) {
-        var key = option.split('_').pop();
+            var key = option.split('_').pop();
 
-        if (!options[key + "Path"] && !options[key + "Base64"] && !options.useUdpSyslog) {
-            util.log('QRadar node-log4js-syslog-appender: Either ' + key + 'Path or ' + key + 'Base64 are required options. It is settable with the ' + option + ' environment variable.');
-            valid = false; // array.forEach is blocking
-        }
-
-        // Deprecated warnings.
-        if (options[key + "Path"]) {
-        	if (options.useUdpSyslog) {
-        		util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
-	                key + 'Path will not be used for unencrypted syslog UDP/514.');
-    		} else {
-	            util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
-	                key + 'Path is now deprecated and will be removed in a future' +
-	                ' relase. Please switch to ' + key + 'Base64 instead.');
+            if (!options[key + "Path"] && !options[key + "Base64"] && !options.useUdpSyslog && !options.useTcpSyslog) {
+                util.log('QRadar node-log4js-syslog-appender: Either ' + key + 'Path or ' + key + 'Base64 are required options. It is settable with the ' + option + ' environment variable.');
+                valid = false; // array.forEach is blocking
             }
-        }
-        if (options[key + "Base64"] && options.useUdpSyslog) {
-    		util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
-                key + 'Base64 will not be used for unencrypted syslog UDP/514.');
-        }
-    })
+
+            // Deprecated warnings.
+            if (options[key + "Path"]) {
+                if (options.useUdpSyslog || options.useTcpSyslog) {
+                    util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
+                        key + 'Path will not be used for unencrypted syslog.');
+                } else {
+                    util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
+                        key + 'Path is now deprecated and will be removed in a future' +
+                        ' relase. Please switch to ' + key + 'Base64 instead.');
+                }
+            }
+            if (options[key + "Base64"] && (options.useUdpSyslog || options.useTcpSyslog)) {
+                util.log('QRadar node-log4js-syslog-appender: WARNING env var ' +
+                    key + 'Base64 will not be used for unencrypted syslog.');
+            }
+        })
 
     return valid;
 };
