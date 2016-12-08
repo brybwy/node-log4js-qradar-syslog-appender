@@ -87,7 +87,7 @@ function loggingFunction(options, log, tries) {
 
     if (!syslogConnectionSingleton.connection && !syslogConnectionSingleton.connecting) {
         syslogConnectionSingleton.connecting = true;
-        if (options.useUdpSyslog) {
+        if (options.useTcpSyslog) {
         	var client = dgram.createSocket('udp4');
         	syslogConnectionSingleton.connection = {
         		write: function (msg) {
@@ -116,7 +116,7 @@ function loggingFunction(options, log, tries) {
         	});
         	syslogConnectionSingleton.connecting = false;
         	logMessage(log, options, tries);
-        } else if (options.useTcpSyslog) {
+        } else if (options.useUdpSyslog) {
             var tcpOptions = {
                 host: options.host,
                 port: options.port
